@@ -28,6 +28,12 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
 
     var drawableSize: CGSize = .zero
 
+    private var lastCPUTimestamp: ContinuousClock.Instant? = nil
+    private let clock = ContinuousClock()
+    
+    private var cpuTimings :Array<Double> = Array()
+    private var gpuTimings :Array<Double> = Array()
+
     init?(_ metalKitView: MTKView) {
         self.device = metalKitView.device!
         guard let queue = self.device.makeCommandQueue() else { return nil }
@@ -96,12 +102,38 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         guard let lastRotationUpdateTimestamp else { return }
         rotation += Constants.rotationPerSecond * now.timeIntervalSince(lastRotationUpdateTimestamp)
     }
+    
+    private func timeDelta()->Duration {
+        let lastTime = self.lastCPUTimestamp ?? self.clock.now
+        let now = self.clock.now
+        self.lastCPUTimestamp = now
+        return now - lastTime
+    }
 
     func draw(in view: MTKView) {
         guard let modelRenderer else { return }
         guard let drawable = view.currentDrawable else { return }
 
         _ = inFlightSemaphore.wait(timeout: DispatchTime.distantFuture)
+        
+        let cpuDuration = timeDelta()
+        let cpuMS = Double(cpuDuration.attoseconds) / 1e15
+        cpuTimings.append(cpuMS)
+        
+        let cpuMSString = String(format:"%.3f", cpuMS)
+        print("Frame time CPU: \(cpuMSString) ms")
+        
+        func TailMean(array :Array<Double> ) -> Double {
+            let n = 60
+            if(array.count > n)
+            {
+                return array[(array.count-n)...].reduce(0, +) / Double(n)
+            }
+            else {
+                return array.reduce(0, +) / Double(array.count)
+            }
+        }
+        print("Average time CPU \(TailMean(array: self.cpuTimings)). GPU \(TailMean(array: self.gpuTimings))")
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             inFlightSemaphore.signal()
@@ -109,9 +141,12 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         }
 
         let semaphore = inFlightSemaphore
-        commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
+        commandBuffer.addCompletedHandler { (_ commandBuffer) -> Swift.Void in
+            // GPU times are in seconds
+            let gpuMS = (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000.0
+            print("Frame times  GPU: \(String(format: "%.3f", gpuMS)) ms")
+            Task {await MainActor.run(body: {self.gpuTimings.append(gpuMS)})}
             semaphore.signal()
-            print("Frame took ", (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000)
         }
 
         updateRotation()
@@ -136,6 +171,8 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         }
 
         commandBuffer.commit()
+
+        lastCPUTimestamp = clock.now
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
