@@ -111,6 +111,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         let semaphore = inFlightSemaphore
         commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
             semaphore.signal()
+            print("Frame took ", (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000)
         }
 
         updateRotation()
@@ -143,3 +144,4 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
 }
 
 #endif // os(iOS) || os(macOS)
+
