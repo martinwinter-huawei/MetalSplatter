@@ -120,8 +120,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         let cpuMS = Double(cpuDuration.attoseconds) / 1e15
         cpuTimings.append(cpuMS)
         
-        let cpuMSString = String(format:"%.3f", cpuMS)
-        print("Frame time CPU: \(cpuMSString) ms")
+        //print("Frame time CPU: \(String(format:"%.3f", cpuMS)) ms")
         
         func TailMean(array :Array<Double> ) -> Double {
             let n = 60
@@ -144,7 +143,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         commandBuffer.addCompletedHandler { (_ commandBuffer) -> Swift.Void in
             // GPU times are in seconds
             let gpuMS = (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000.0
-            print("Frame times  GPU: \(String(format: "%.3f", gpuMS)) ms")
+            //print("Frame times  GPU: \(String(format: "%.3f", gpuMS)) ms")
             Task {await MainActor.run(body: {self.gpuTimings.append(gpuMS)})}
             semaphore.signal()
         }
