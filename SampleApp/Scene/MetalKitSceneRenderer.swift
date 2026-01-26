@@ -25,6 +25,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
 
     var lastRotationUpdateTimestamp: Date? = nil
     var rotation: Angle = .zero
+    var rotating: Bool = false
 
     var drawableSize: CGSize = .zero
 
@@ -59,6 +60,9 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
                                           maxViewCount: 1,
                                           maxSimultaneousRenders: Constants.maxSimultaneousRenders)
             try await splat.read(from: url)
+            splat.onSortComplete = { (duration :TimeInterval) -> Void in
+                print("Sorted ", duration * 1000, " ms" )
+            }
             modelRenderer = splat
         case .sampleBox:
             modelRenderer = try! SampleBoxRenderer(device: device,
@@ -94,6 +98,8 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
     }
 
     private func updateRotation() {
+        if !self.rotating { return }
+        
         let now = Date()
         defer {
             lastRotationUpdateTimestamp = now
@@ -108,6 +114,11 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         let now = self.clock.now
         self.lastCPUTimestamp = now
         return now - lastTime
+    }
+    
+    public func toggleRotation() {
+        self.rotating = !self.rotating
+        lastRotationUpdateTimestamp = Date()
     }
 
     func draw(in view: MTKView) {

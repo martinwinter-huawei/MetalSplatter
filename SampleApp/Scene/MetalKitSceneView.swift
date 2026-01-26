@@ -9,6 +9,48 @@ private typealias ViewRepresentable = NSViewRepresentable
 private typealias ViewRepresentable = UIViewRepresentable
 #endif
 
+class MetalView: MTKView{
+    var renderer: MetalKitSceneRenderer?
+    
+    override var acceptsFirstResponder: Bool { return true }
+
+    func initMe(){
+        if let metalDevice = MTLCreateSystemDefaultDevice() {
+           self.device = metalDevice
+        }
+        self.renderer = MetalKitSceneRenderer(self)!
+        self.delegate = renderer
+        if !self.becomeFirstResponder() {
+            print("Could not get first responder")
+        }
+    }
+    
+    public override init(frame frameRect: CGRect, device: (any MTLDevice)?){
+        super.init(frame: frameRect, device:device)
+        initMe()
+    }
+    
+    public required init(coder:NSCoder){
+        super.init(coder: coder)
+        initMe()
+    }
+    
+    override func mouseDragged(with event: NSEvent) {
+        if NSEvent.pressedMouseButtons & 1 != 0 {
+            //Move
+            print("Moved ", event)
+        }
+    }
+    
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 14 {
+            print("Toggled navigation mode")
+            self.renderer?.toggleRotation()
+        }
+        print("Key down: \(event.characters!)")
+    }
+}
+
 struct MetalKitSceneView: ViewRepresentable {
     var modelIdentifier: ModelIdentifier?
 
@@ -31,19 +73,12 @@ struct MetalKitSceneView: ViewRepresentable {
 #endif
 
     private func makeView(_ coordinator: Coordinator) -> MTKView {
-        let metalKitView = MTKView()
 
-        if let metalDevice = MTLCreateSystemDefaultDevice() {
-            metalKitView.device = metalDevice
-        }
-
-        let renderer = MetalKitSceneRenderer(metalKitView)
-        coordinator.renderer = renderer
-        metalKitView.delegate = renderer
-
+        let metalKitView = MetalView()
+        coordinator.renderer = metalKitView.renderer
         Task {
             do {
-                try await renderer?.load(modelIdentifier)
+                try await metalKitView.renderer!.load(modelIdentifier)
             } catch {
                 print("Error loading model: \(error.localizedDescription)")
             }
