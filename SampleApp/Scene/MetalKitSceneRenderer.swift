@@ -7,11 +7,17 @@ import os
 import SampleBoxRenderer
 import simd
 import SwiftUI
+import Carbon
 
 
 struct Camera{
-    var position:SIMD3<Float> = .zero
-    var rotation:matrix_float3x3 = matrix_identity_float3x3
+    private var position:SIMD3<Float> = .zero
+    private var rotation:matrix_float3x3 = matrix_identity_float3x3
+    
+    mutating func resetToIdentity(){
+        position = .zero
+        rotation = matrix_identity_float3x3
+    }
     
     func getWorldTransform() -> matrix_float4x4{
         var translationMatrix: matrix_float4x4 = matrix_identity_float4x4
@@ -33,6 +39,17 @@ struct Camera{
         self.rotation = rot * self.rotation
         self.position = (rot * (self.position - rotationCenter)) + rotationCenter
     }
+    
+    mutating func rotateLocally(pitch:Float, yaw:Float) {
+        let yawMat = matrix3x3_rotation(radians: yaw, axis: simd_float3(0, 1, 0))
+        let pitchMat = matrix3x3_rotation(radians: pitch, axis: simd_float3(1, 0, 0))
+        
+        self.rotation = yawMat * pitchMat * self.rotation
+    }
+    
+    mutating func moveLocally(translation:SIMD3<Float>){
+        self.position += translation
+    }
 }
 
 @MainActor
@@ -53,6 +70,12 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
     var lastRotationUpdateTimestamp: Date? = nil
     var camera:Camera = Camera()
     var rotating: Bool = true
+    var movingForward: Bool = false
+    var movingBackward: Bool = false
+    var movingLeft: Bool = false
+    var movingRight: Bool = false
+    var movingUp: Bool = false
+    var movingDown: Bool = false
 
     var drawableSize: CGSize = .zero
 
@@ -102,8 +125,8 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
             break
         }
         
-        camera.position = simd_float3(1, 0, Constants.modelCenterZ)
-        camera.rotation = matrix_identity_float3x3
+        camera.resetToIdentity()
+        camera.moveLocally(translation: simd_float3(1, 0, Constants.modelCenterZ))
     }
 
     private var viewport: ModelRendererViewportDescriptor {
@@ -125,16 +148,29 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
     }
 
     private func updateRotation() {
-        if !self.rotating { return }
-        
         let now = Date()
         defer {
             lastRotationUpdateTimestamp = now
         }
-
         guard let lastRotationUpdateTimestamp else { return }
-        let angle = (Constants.rotationPerSecond * now.timeIntervalSince(lastRotationUpdateTimestamp)).radians
-        camera.rotateAround(axis: Constants.rotationAxis, angle: Float(angle), rotationCenter: simd_float3(0, 0, Constants.modelCenterZ))
+        let delta = now.timeIntervalSince(lastRotationUpdateTimestamp)
+        
+        if(self.rotating) {
+            let angle = (Constants.rotationPerSecond * delta).radians
+            camera.rotateAround(axis: Constants.rotationAxis, angle: Float(angle), rotationCenter: simd_float3(0, 0, Constants.modelCenterZ))
+        }
+        
+        var movement = simd_float3(0, 0, 0)
+        if movingForward {movement.z += 1}
+        if movingBackward {movement.z -= 1}
+        if movingLeft {movement.x += 1}
+        if movingRight {movement.x -= 1}
+        if movingUp {movement.y -= 1}
+        if movingDown {movement.y += 1}
+        
+        movement *= Float(delta) * 2
+        
+        self.camera.moveLocally(translation: movement)
     }
     
     private func timeDelta()->Duration {
@@ -148,19 +184,58 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         if NSEvent.pressedMouseButtons & 1 != 0 {
             //Move
             print("Moved ", event)
+            let speed = Float(0.001)
+            camera.rotateLocally(pitch: speed * Float(event.deltaY), yaw: speed * Float(event.deltaX))
         }
     }
     
     public func keyDown(event:NSEvent){
-        if event.keyCode == 14 {
+        if event.keyCode == kVK_ANSI_T {
             self.rotating = !self.rotating
             lastRotationUpdateTimestamp = Date()
+        }
+        else if event.keyCode == kVK_ANSI_W {
+            self.movingForward = true
+        }
+        else if event.keyCode == kVK_ANSI_A {
+            self.movingLeft = true
+        }
+        else if event.keyCode == kVK_ANSI_S {
+            self.movingBackward = true
+        }
+        else if event.keyCode == kVK_ANSI_D {
+            self.movingRight = true
+        }
+        else if event.keyCode == kVK_ANSI_E {
+            self.movingUp = true
+        }
+        else if event.keyCode == kVK_ANSI_Q {
+            self.movingDown = true
         }
         print("Key down: \(event.characters!)")
     }
     
     public func keyUp(event:NSEvent){
-        
+        if event.keyCode == kVK_ANSI_T {
+        }
+        else if event.keyCode == kVK_ANSI_W {
+            self.movingForward = false
+        }
+        else if event.keyCode == kVK_ANSI_A {
+            self.movingLeft = false
+        }
+        else if event.keyCode == kVK_ANSI_S {
+            self.movingBackward = false
+        }
+        else if event.keyCode == kVK_ANSI_D {
+            self.movingRight = false
+        }
+        else if event.keyCode == kVK_ANSI_E {
+            self.movingUp = false
+        }
+        else if event.keyCode == kVK_ANSI_Q {
+            self.movingDown = false
+        }
     }
 
     func draw(in view: MTKView) {
