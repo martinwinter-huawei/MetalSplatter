@@ -20,18 +20,17 @@ struct Camera{
     }
     
     func getWorldTransform() -> matrix_float4x4{
-        var translationMatrix: matrix_float4x4 = matrix_identity_float4x4
-        translationMatrix.columns.3.x = position.x
-        translationMatrix.columns.3.y = position.y
-        translationMatrix.columns.3.z = position.z
-        
-        var rotation4 = matrix_float4x4()
-        rotation4.columns.0 = SIMD4<Float>(rotation.columns.0.x, rotation.columns.0.y, rotation.columns.0.z, 0.0)
-        rotation4.columns.1 = SIMD4<Float>(rotation.columns.1.x, rotation.columns.1.y, rotation.columns.1.z, 0.0)
-        rotation4.columns.2 = SIMD4<Float>(rotation.columns.2.x, rotation.columns.2.y, rotation.columns.2.z, 0.0)
-        rotation4.columns.3 = SIMD4<Float>(0.0, 0.0, 0.0, 1.0)
-        
-        return translationMatrix * rotation4
+        let pos = (position)
+        var result = matrix_float4x4()
+        result.columns.0 = SIMD4<Float>(rotation.columns.0.x, rotation.columns.0.y, rotation.columns.0.z, 0.0)
+        result.columns.1 = SIMD4<Float>(rotation.columns.1.x, rotation.columns.1.y, rotation.columns.1.z, 0.0)
+        result.columns.2 = SIMD4<Float>(rotation.columns.2.x, rotation.columns.2.y, rotation.columns.2.z, 0.0)
+        result.columns.3 = SIMD4<Float>(pos.x, pos.y, pos.z, 1.0)
+        return result
+    }
+    
+    func getUpAxis() -> SIMD3<Float>{
+        return rotation.columns.1
     }
     
     mutating func rotateAround(axis:SIMD3<Float>, angle:Float, rotationCenter:SIMD3<Float>){
@@ -43,8 +42,10 @@ struct Camera{
     mutating func rotateLocally(pitch:Float, yaw:Float) {
         let yawMat = matrix3x3_rotation(radians: yaw, axis: simd_float3(0, 1, 0))
         let pitchMat = matrix3x3_rotation(radians: pitch, axis: simd_float3(1, 0, 0))
+        let transform = pitchMat * yawMat
         
-        self.rotation = yawMat * pitchMat * self.rotation
+        self.rotation = transform * self.rotation
+        self.position = transform * self.position
     }
     
     mutating func moveLocally(translation:SIMD3<Float>){
@@ -126,7 +127,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         }
         
         camera.resetToIdentity()
-        camera.moveLocally(translation: simd_float3(1, 0, Constants.modelCenterZ))
+        camera.moveLocally(translation: simd_float3(-1, 0, Constants.modelCenterZ))
     }
 
     private var viewport: ModelRendererViewportDescriptor {
@@ -157,7 +158,8 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         
         if(self.rotating) {
             let angle = (Constants.rotationPerSecond * delta).radians
-            camera.rotateAround(axis: Constants.rotationAxis, angle: Float(angle), rotationCenter: simd_float3(0, 0, Constants.modelCenterZ))
+            camera.rotateAround(axis: camera.getUpAxis(), angle: Float(angle), rotationCenter: simd_float3(0, 0, Constants.modelCenterZ))
+            //camera.rotateAround(axis: Constants.rotationAxis, angle: Float(angle), rotationCenter: simd_float3(0, 0, Constants.modelCenterZ))
         }
         
         var movement = simd_float3(0, 0, 0)
@@ -184,7 +186,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         if NSEvent.pressedMouseButtons & 1 != 0 {
             //Move
             print("Moved ", event)
-            let speed = Float(0.001)
+            let speed = Float(0.005)
             camera.rotateLocally(pitch: speed * Float(event.deltaY), yaw: speed * Float(event.deltaX))
         }
     }
