@@ -36,18 +36,15 @@ class MetalView: MTKView{
     }
     
     override func mouseDragged(with event: NSEvent) {
-        if NSEvent.pressedMouseButtons & 1 != 0 {
-            //Move
-            print("Moved ", event)
-        }
+        self.renderer?.mousedDragged(event: event)
     }
     
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 14 {
-            print("Toggled navigation mode")
-            self.renderer?.toggleRotation()
-        }
-        print("Key down: \(event.characters!)")
+        self.renderer?.keyDown(event: event)
+    }
+    
+    override func keyUp(with event: NSEvent) {
+        self.renderer?.keyUp(event: event)
     }
 }
 

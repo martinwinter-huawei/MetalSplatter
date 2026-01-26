@@ -8,6 +8,33 @@ import SampleBoxRenderer
 import simd
 import SwiftUI
 
+
+struct Camera{
+    var position:SIMD3<Float> = .zero
+    var rotation:matrix_float3x3 = matrix_identity_float3x3
+    
+    func getWorldTransform() -> matrix_float4x4{
+        var translationMatrix: matrix_float4x4 = matrix_identity_float4x4
+        translationMatrix.columns.3.x = position.x
+        translationMatrix.columns.3.y = position.y
+        translationMatrix.columns.3.z = position.z
+        
+        var rotation4 = matrix_float4x4()
+        rotation4.columns.0 = SIMD4<Float>(rotation.columns.0.x, rotation.columns.0.y, rotation.columns.0.z, 0.0)
+        rotation4.columns.1 = SIMD4<Float>(rotation.columns.1.x, rotation.columns.1.y, rotation.columns.1.z, 0.0)
+        rotation4.columns.2 = SIMD4<Float>(rotation.columns.2.x, rotation.columns.2.y, rotation.columns.2.z, 0.0)
+        rotation4.columns.3 = SIMD4<Float>(0.0, 0.0, 0.0, 1.0)
+        
+        return translationMatrix * rotation4
+    }
+    
+    mutating func rotateAround(axis:SIMD3<Float>, angle:Float, rotationCenter:SIMD3<Float>){
+        let rot = matrix3x3_rotation(radians: angle, axis: axis)
+        self.rotation = rot * self.rotation
+        self.position = (rot * (self.position - rotationCenter)) + rotationCenter
+    }
+}
+
 @MainActor
 class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
     private static let log =
@@ -24,8 +51,8 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
     let inFlightSemaphore = DispatchSemaphore(value: Constants.maxSimultaneousRenders)
 
     var lastRotationUpdateTimestamp: Date? = nil
-    var rotation: Angle = .zero
-    var rotating: Bool = false
+    var camera:Camera = Camera()
+    var rotating: Bool = true
 
     var drawableSize: CGSize = .zero
 
@@ -74,6 +101,9 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         case .none:
             break
         }
+        
+        camera.position = simd_float3(1, 0, Constants.modelCenterZ)
+        camera.rotation = matrix_identity_float3x3
     }
 
     private var viewport: ModelRendererViewportDescriptor {
@@ -82,9 +112,6 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
                                                              nearZ: 0.1,
                                                              farZ: 100.0)
 
-        let rotationMatrix = matrix4x4_rotation(radians: Float(rotation.radians),
-                                                axis: Constants.rotationAxis)
-        let translationMatrix = matrix4x4_translation(0.0, 0.0, Constants.modelCenterZ)
         // Turn common 3D GS PLY files rightside-up. This isn't generally meaningful, it just
         // happens to be a useful default for the most common datasets at the moment.
         let commonUpCalibration = matrix4x4_rotation(radians: .pi, axis: SIMD3<Float>(0, 0, 1))
@@ -93,7 +120,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
 
         return ModelRendererViewportDescriptor(viewport: viewport,
                                                projectionMatrix: projectionMatrix,
-                                               viewMatrix: translationMatrix * rotationMatrix * commonUpCalibration,
+                                               viewMatrix: camera.getWorldTransform() * commonUpCalibration,
                                                screenSize: SIMD2(x: Int(drawableSize.width), y: Int(drawableSize.height)))
     }
 
@@ -106,7 +133,8 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         }
 
         guard let lastRotationUpdateTimestamp else { return }
-        rotation += Constants.rotationPerSecond * now.timeIntervalSince(lastRotationUpdateTimestamp)
+        let angle = (Constants.rotationPerSecond * now.timeIntervalSince(lastRotationUpdateTimestamp)).radians
+        camera.rotateAround(axis: Constants.rotationAxis, angle: Float(angle), rotationCenter: simd_float3(0, 0, Constants.modelCenterZ))
     }
     
     private func timeDelta()->Duration {
@@ -116,9 +144,23 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         return now - lastTime
     }
     
-    public func toggleRotation() {
-        self.rotating = !self.rotating
-        lastRotationUpdateTimestamp = Date()
+    public func mousedDragged(event:NSEvent){
+        if NSEvent.pressedMouseButtons & 1 != 0 {
+            //Move
+            print("Moved ", event)
+        }
+    }
+    
+    public func keyDown(event:NSEvent){
+        if event.keyCode == 14 {
+            self.rotating = !self.rotating
+            lastRotationUpdateTimestamp = Date()
+        }
+        print("Key down: \(event.characters!)")
+    }
+    
+    public func keyUp(event:NSEvent){
+        
     }
 
     func draw(in view: MTKView) {
