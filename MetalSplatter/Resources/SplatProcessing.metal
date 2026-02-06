@@ -121,5 +121,14 @@ FragmentIn splatVertex(Splat splat,
 
 half splatFragmentAlpha(half2 relativePosition, half splatAlpha) {
     half negativeMagnitudeSquared = -dot(relativePosition, relativePosition);
-    return (negativeMagnitudeSquared < -kBoundsRadiusSquared) ? 0 : exp(0.5 * negativeMagnitudeSquared) * splatAlpha;
+    if(negativeMagnitudeSquared < -kBoundsRadiusSquared)
+    {
+        return 0;
+    }
+    half power = 0.5 * negativeMagnitudeSquared;
+    //return exp(power) * splatAlpha;
+    return max(0.0f, 3.5245553e-01f * power + 7.7293956e-01f) * splatAlpha;  // torch_linear
+    //return max(0.0f, -0.00542598f * power * power + 0.3415371f * power + 0.76775193f) * splatAlpha; // torch_quadratic
+    //return max(0.0f, 0.02759448f * power * power * power + 0.25069377f * power * power + 0.80391016f * power + 0.9552081f) * splatAlpha; // torch_cubic
 }
+			
