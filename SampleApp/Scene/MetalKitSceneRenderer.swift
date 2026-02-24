@@ -110,9 +110,10 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
                                           sampleCount: metalKitView.sampleCount,
                                           maxViewCount: 1,
                                           maxSimultaneousRenders: Constants.maxSimultaneousRenders)
+            splat.useTightestCulling = true
+            splat.usePolynomial = true
             try await splat.read(from: url)
             splat.onSortComplete = { (duration :TimeInterval) -> Void in
-                print("Sorted ", duration * 1000, " ms" )
             }
             modelRenderer = splat
         case .sampleBox:
@@ -262,8 +263,6 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
                 return array.reduce(0, +) / Double(array.count)
             }
         }
-        print("Average time CPU \(TailMean(array: self.cpuTimings)). GPU \(TailMean(array: self.gpuTimings))")
-
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             inFlightSemaphore.signal()
             return
@@ -279,6 +278,7 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
                 self.gpuTimings.append(gpuMS)
                 if BenchmarkState.shared.isBenchmarkMode && self.gpuTimings.count >= BenchmarkState.shared.benchmarkFrameCount {
                     print("Benchmark Finished. Average time CPU \(TailMean(array: self.cpuTimings)) ms, GPU \(TailMean(array: self.gpuTimings)) ms")
+                    fflush(stdout)
                     exit(0)
                 }
             })}

@@ -101,20 +101,41 @@ FragmentIn splatVertex(Splat splat,
         return out;
     }
 
+    // Compute the effective bounding radius for this splat.
+    // With tightest culling we shrink the quad to the region where the polynomial
+    // kernel still contributes more than kTightThreshold, saving fragment work.
+    // Derivation: solve  max(0, kPolyA * power + kPolyB) * alpha = kTightThreshold
+    //   => |rp|^2 = 2 * (kPolyB * alpha - kTightThreshold) / (kPolyA * alpha)
+    // Falls back to kBoundsRadius when culling is disabled or alpha is too low.
+    float boundsRadius;
+    if (useTightestCulling) {
+        float alpha = float(splat.color.a);
+        if (kPolyB * alpha > kTightThreshold) {
+            boundsRadius = sqrt(2.0f * (kPolyB * alpha - kTightThreshold) / (kPolyA * alpha));
+        } else {
+            // Splat is too transparent to contribute above kTightThreshold anywhere;
+            // emit a degenerate quad so the GPU skips it entirely.
+            out.position = float4(1, 1, 0, 1);
+            return out;
+        }
+    } else {
+        boundsRadius = float(kBoundsRadius);
+    }
+
     const half2 relativeCoordinatesArray[] = { { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 } };
     half2 relativeCoordinates = relativeCoordinatesArray[relativeVertexIndex];
     half2 screenSizeFloat = half2(uniforms.screenSize.x, uniforms.screenSize.y);
     half2 projectedScreenDelta =
         (relativeCoordinates.x * half2(axis1) + relativeCoordinates.y * half2(axis2))
         * 2
-        * kBoundsRadius
+        * half(boundsRadius)
         / screenSizeFloat;
 
     out.position = float4(projectedCenter.x + projectedScreenDelta.x * projectedCenter.w,
                           projectedCenter.y + projectedScreenDelta.y * projectedCenter.w,
                           projectedCenter.z,
                           projectedCenter.w);
-    out.relativePosition = kBoundsRadius * relativeCoordinates;
+    out.relativePosition = half(boundsRadius) * relativeCoordinates;
     out.color = splat.color;
     return out;
 }
@@ -126,9 +147,10 @@ half splatFragmentAlpha(half2 relativePosition, half splatAlpha) {
         return 0;
     }
     half power = 0.5 * negativeMagnitudeSquared;
-    //return exp(power) * splatAlpha;
-    return max(0.0f, 3.5245553e-01f * power + 7.7293956e-01f) * splatAlpha;  // torch_linear
-    //return max(0.0f, -0.00542598f * power * power + 0.3415371f * power + 0.76775193f) * splatAlpha; // torch_quadratic
-    //return max(0.0f, 0.02759448f * power * power * power + 0.25069377f * power * power + 0.80391016f * power + 0.9552081f) * splatAlpha; // torch_cubic
+    if (usePolynomial) {
+        return max(half(0.0f), half(kPolyA) * power + half(kPolyB)) * splatAlpha;  // torch_linear polynomial approximation
+    } else {
+        return exp(power) * splatAlpha;  // exact Gaussian
+    }
 }
 			

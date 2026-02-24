@@ -147,6 +147,38 @@ public final class SplatRenderer: @unchecked Sendable {
 #endif
     }
 
+    /**
+     When true, each splat's bounding quad is shrunk to the area where the polynomial-kernel
+     contribution exceeds 1/255 (i.e. the tightest useful region). This reduces the number of
+     fragment invocations for bright/opaque splats and can improve rendering performance.
+
+     Mirrors the `USE_TIGHTEST_CULLING` compile flag in vk\_gaussian\_splatting-polynomial.
+     Changing this property invalidates all cached pipeline states; the pipelines will be
+     lazily rebuilt on the next `render()` call.
+     */
+    public var useTightestCulling: Bool = false {
+        didSet {
+            if oldValue != useTightestCulling {
+                resetPipelineStates()
+            }
+        }
+    }
+
+    /**
+     When true, the fragment shader uses the fast polynomial (torch_linear) approximation
+     of the Gaussian kernel. When false, the exact `exp()` function is used instead.
+
+     Mirrors the polynomial activation mode in vk\_gaussian\_splatting-polynomial.
+     Changing this property invalidates all cached pipeline states; the pipelines will be
+     lazily rebuilt on the next `render()` call.
+     */
+    public var usePolynomial: Bool = true {
+        didSet {
+            if oldValue != usePolynomial {
+                resetPipelineStates()
+            }
+        }
+    }
 
     /// Called when a sort starts
     public var onSortStart: (@Sendable () -> Void)? {
@@ -367,14 +399,27 @@ public final class SplatRenderer: @unchecked Sendable {
         renderState.postprocessDepthState = try buildPostprocessDepthState()
     }
 
+    /// Builds the `MTLFunctionConstantValues` used by every splat shader variant.
+    private func makeSplatFunctionConstants() -> MTLFunctionConstantValues {
+        let constants = MTLFunctionConstantValues()
+        var tightCulling = useTightestCulling
+        // Index 0 matches `[[function_constant(0)]]` on `useTightestCulling` in ShaderCommon.h
+        constants.setConstantValue(&tightCulling, type: .bool, index: 0)
+        var polynomial = usePolynomial
+        // Index 1 matches `[[function_constant(1)]]` on `usePolynomial` in ShaderCommon.h
+        constants.setConstantValue(&polynomial, type: .bool, index: 1)
+        return constants
+    }
+
     private func buildSingleStagePipelineState() throws -> MTLRenderPipelineState {
         assert(!useMultiStagePipeline)
 
         let pipelineDescriptor = MTLRenderPipelineDescriptor()
 
         pipelineDescriptor.label = "SingleStagePipeline"
-        pipelineDescriptor.vertexFunction = library.makeRequiredFunction(name: "singleStageSplatVertexShader")
-        pipelineDescriptor.fragmentFunction = library.makeRequiredFunction(name: "singleStageSplatFragmentShader")
+        let constants = makeSplatFunctionConstants()
+        pipelineDescriptor.vertexFunction = try library.makeFunction(name: "singleStageSplatVertexShader", constantValues: constants)
+        pipelineDescriptor.fragmentFunction = try library.makeFunction(name: "singleStageSplatFragmentShader", constantValues: constants)
 
         pipelineDescriptor.rasterSampleCount = sampleCount
 
@@ -424,8 +469,9 @@ public final class SplatRenderer: @unchecked Sendable {
         let pipelineDescriptor = MTLRenderPipelineDescriptor()
 
         pipelineDescriptor.label = "DrawSplatPipeline"
-        pipelineDescriptor.vertexFunction = library.makeRequiredFunction(name: "multiStageSplatVertexShader")
-        pipelineDescriptor.fragmentFunction = library.makeRequiredFunction(name: "multiStageSplatFragmentShader")
+        let constants = makeSplatFunctionConstants()
+        pipelineDescriptor.vertexFunction = try library.makeFunction(name: "multiStageSplatVertexShader", constantValues: constants)
+        pipelineDescriptor.fragmentFunction = try library.makeFunction(name: "multiStageSplatFragmentShader", constantValues: constants)
 
         pipelineDescriptor.rasterSampleCount = sampleCount
 

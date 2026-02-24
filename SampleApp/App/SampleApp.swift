@@ -10,7 +10,11 @@ struct SampleApp: App {
         if let index = args.firstIndex(of: "--benchmark"), index + 1 < args.count {
             let path = args[index + 1]
             BenchmarkState.shared.isBenchmarkMode = true
-            BenchmarkState.shared.benchmarkModelPath = URL(fileURLWithPath: path)
+            let resolvedURL = URL(fileURLWithPath: path)
+            BenchmarkState.shared.benchmarkModelPath = resolvedURL
+            print("[Benchmark] Mode enabled. Model path: \(resolvedURL.path)")
+            print("[Benchmark] File exists: \(FileManager.default.fileExists(atPath: resolvedURL.path))")
+            print("[Benchmark] Will print result after \(BenchmarkState.shared.benchmarkFrameCount) frames.")
         } else {
             // Drop executable and standard Xcode/macOS args like -NSDocumentRevisionsDebugMode
             if let path = args.dropFirst().first(where: { !$0.hasPrefix("-") }) {
