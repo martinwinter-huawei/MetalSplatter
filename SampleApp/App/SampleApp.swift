@@ -11,8 +11,11 @@ struct SampleApp: App {
             let path = args[index + 1]
             BenchmarkState.shared.isBenchmarkMode = true
             BenchmarkState.shared.benchmarkModelPath = URL(fileURLWithPath: path)
-        } else if let path = args.dropFirst().first(where: { !$0.hasPrefix("-") }) {
-            BenchmarkState.shared.autoLoadModelPath = URL(fileURLWithPath: path)
+        } else {
+            // Drop executable and standard Xcode/macOS args like -NSDocumentRevisionsDebugMode
+            if let path = args.dropFirst().first(where: { !$0.hasPrefix("-") }) {
+                BenchmarkState.shared.autoLoadModelPath = URL(fileURLWithPath: path)
+            }
         }
     }
 

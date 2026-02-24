@@ -68,9 +68,10 @@ struct ContentView: View {
                           allowedContentTypes: [
                             UTType(filenameExtension: "ply")!,
                             UTType(filenameExtension: "splat")!,
-                          ]) {
+                            UTType(filenameExtension: "spz")!,
+                          ]) { result in
                 isPickingFile = false
-                switch $0 {
+                switch result {
                 case .success(let url):
                     _ = url.startAccessingSecurityScopedResource()
                     Task {
