@@ -270,11 +270,18 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         }
 
         let semaphore = inFlightSemaphore
-        commandBuffer.addCompletedHandler { (_ commandBuffer) -> Swift.Void in
+        commandBuffer.addCompletedHandler { [weak self] (_ commandBuffer) -> Swift.Void in
+            guard let self = self else { return }
             // GPU times are in seconds
             let gpuMS = (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000.0
             //print("Frame times  GPU: \(String(format: "%.3f", gpuMS)) ms")
-            Task {await MainActor.run(body: {self.gpuTimings.append(gpuMS)})}
+            Task {await MainActor.run(body: {
+                self.gpuTimings.append(gpuMS)
+                if BenchmarkState.shared.isBenchmarkMode && self.gpuTimings.count >= BenchmarkState.shared.benchmarkFrameCount {
+                    print("Benchmark Finished. Average time CPU \(TailMean(array: self.cpuTimings)) ms, GPU \(TailMean(array: self.gpuTimings)) ms")
+                    exit(0)
+                }
+            })}
             semaphore.signal()
         }
 

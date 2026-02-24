@@ -109,5 +109,16 @@ struct ContentView: View {
             Spacer()
 #endif // os(visionOS)
         }
+        .onAppear {
+            checkForBenchmarkLaunch()
+        }
+    }
+
+    private func checkForBenchmarkLaunch() {
+        if BenchmarkState.shared.isBenchmarkMode, let url = BenchmarkState.shared.benchmarkModelPath {
+            openWindow(value: ModelIdentifier.gaussianSplat(url))
+        } else if let url = BenchmarkState.shared.autoLoadModelPath {
+            openWindow(value: ModelIdentifier.gaussianSplat(url))
+        }
     }
 }

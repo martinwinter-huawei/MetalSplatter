@@ -5,6 +5,17 @@ import SwiftUI
 
 @main
 struct SampleApp: App {
+    init() {
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--benchmark"), index + 1 < args.count {
+            let path = args[index + 1]
+            BenchmarkState.shared.isBenchmarkMode = true
+            BenchmarkState.shared.benchmarkModelPath = URL(fileURLWithPath: path)
+        } else if let path = args.dropFirst().first(where: { !$0.hasPrefix("-") }) {
+            BenchmarkState.shared.autoLoadModelPath = URL(fileURLWithPath: path)
+        }
+    }
+
     var body: some Scene {
         WindowGroup("MetalSplatter Sample App", id: "main") {
             ContentView()
