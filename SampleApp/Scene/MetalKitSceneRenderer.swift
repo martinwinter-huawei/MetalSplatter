@@ -8,6 +8,8 @@ import SampleBoxRenderer
 import simd
 import SwiftUI
 import Carbon
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 
 struct Camera{
@@ -86,6 +88,12 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
     private var cpuTimings :Array<Double> = Array()
     private var gpuTimings :Array<Double> = Array()
 
+    // Reusable CIContext for PNG image saving (expensive to create, so cached).
+    private lazy var ciContext: CIContext = CIContext(mtlDevice: device)
+
+    // Tracks all in-flight PNG save tasks so we can wait for them before exit.
+    private let imageSaveGroup = DispatchGroup()
+
     init?(_ metalKitView: MTKView) {
         self.device = metalKitView.device!
         guard let queue = self.device.makeCommandQueue() else { return nil }
@@ -110,8 +118,8 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
                                           sampleCount: metalKitView.sampleCount,
                                           maxViewCount: 1,
                                           maxSimultaneousRenders: Constants.maxSimultaneousRenders)
-            splat.useTightestCulling = true
-            splat.usePolynomial = true
+            splat.useTightestCulling = false
+            splat.usePolynomial = false
             try await splat.read(from: url)
             splat.onSortComplete = { (duration :TimeInterval) -> Void in
             }
@@ -131,7 +139,9 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         camera.moveLocally(translation: simd_float3(-1, 0, Constants.modelCenterZ))
     }
 
-    private var viewport: ModelRendererViewportDescriptor {
+    // MARK: - Viewport helpers
+
+    private var interactiveViewport: ModelRendererViewportDescriptor {
         let projectionMatrix = matrix_perspective_right_hand(fovyRadians: Float(Constants.fovy.radians),
                                                              aspectRatio: Float(drawableSize.width / drawableSize.height),
                                                              nearZ: 0.1,
@@ -147,6 +157,38 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
                                                projectionMatrix: projectionMatrix,
                                                viewMatrix: camera.getWorldTransform() * commonUpCalibration,
                                                screenSize: SIMD2(x: Int(drawableSize.width), y: Int(drawableSize.height)))
+    }
+
+    private func cameraViewport(for cam: CameraData) -> ModelRendererViewportDescriptor {
+        let aspectRatio = Float(drawableSize.width / drawableSize.height)
+        let viewport = MTLViewport(originX: 0, originY: 0,
+                                   width: drawableSize.width, height: drawableSize.height,
+                                   znear: 0, zfar: 1)
+        return ModelRendererViewportDescriptor(
+            viewport: viewport,
+            projectionMatrix: cam.projectionMatrix(aspectRatio: aspectRatio),
+            viewMatrix: cam.viewMatrix,
+            screenSize: SIMD2(x: Int(drawableSize.width), y: Int(drawableSize.height))
+        )
+    }
+
+    // MARK: - Image saving
+
+    /// Saves the contents of a Metal texture as a PNG file.
+    /// Must be called after the GPU command buffer has completed.
+    private func saveTexture(_ texture: MTLTexture, toDirectory dir: URL, named name: String) {
+        // Convert bgra8Unorm_srgb texture to a CIImage, then write PNG.
+        let ciImage = CIImage(mtlTexture: texture, options: [.colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])!
+            .oriented(.downMirrored)  // Metal textures are flipped relative to image convention
+        let destURL = dir.appendingPathComponent("\(name).png")
+        do {
+            try ciContext.writePNGRepresentation(of: ciImage,
+                                                 to: destURL,
+                                                 format: .RGBA8,
+                                                 colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        } catch {
+            Self.log.error("Failed to save image \(name): \(error)")
+        }
     }
 
     private func updateRotation() {
@@ -251,8 +293,6 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         let cpuMS = Double(cpuDuration.attoseconds) / 1e15
         cpuTimings.append(cpuMS)
         
-        //print("Frame time CPU: \(String(format:"%.3f", cpuMS)) ms")
-        
         func TailMean(array :Array<Double> ) -> Double {
             let n = 60
             if(array.count > n)
@@ -268,28 +308,131 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
             return
         }
 
+        // ── Camera-based benchmark mode ──────────────────────────────────────────────
+        let benchmarkCameras = BenchmarkState.shared.cameras
+        let isCameraBenchmark = BenchmarkState.shared.isBenchmarkMode && !benchmarkCameras.isEmpty
+
+        // Pick the viewport to render this frame.
+        let renderViewport: ModelRendererViewportDescriptor
+        let cameraIndexThisFrame: Int
+        let cameraNameThisFrame: String
+
+        if isCameraBenchmark {
+            cameraIndexThisFrame = BenchmarkState.shared.currentCameraIndex
+            guard cameraIndexThisFrame < benchmarkCameras.count else {
+                // All cameras rendered — should already have exited, but guard just in case.
+                inFlightSemaphore.signal()
+                return
+            }
+            let cam = benchmarkCameras[cameraIndexThisFrame]
+            cameraNameThisFrame = cam.img_name
+            renderViewport = cameraViewport(for: cam)
+            // Advance the index now (on MainActor) so the next draw() picks the next camera.
+            BenchmarkState.shared.currentCameraIndex += 1
+        } else {
+            cameraIndexThisFrame = -1
+            cameraNameThisFrame = ""
+            renderViewport = interactiveViewport
+            if !BenchmarkState.shared.isBenchmarkMode {
+                updateRotation()
+            }
+        }
+
+        let colorTexture = drawable.texture
+        let saveDir = BenchmarkState.shared.saveImagesURL
+        let imgName = cameraNameThisFrame
+        let ciCtx = ciContext  // capture for background thread
+
+        // ── Create a CPU-readable staging texture for image saving ───────────────────
+        // We CANNOT read directly from the drawable texture after present() because
+        // CAMetalDrawable textures are recycled immediately. We blit into a staging
+        // texture (managed/shared storage) that we own and can safely read back.
+        let stagingTexture: MTLTexture?
+        if saveDir != nil && isCameraBenchmark && !imgName.isEmpty {
+            let desc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: colorTexture.pixelFormat,
+                width: colorTexture.width,
+                height: colorTexture.height,
+                mipmapped: false)
+            desc.usage = [.shaderRead]
+#if os(macOS)
+            desc.storageMode = .managed
+#else
+            desc.storageMode = .shared
+#endif
+            stagingTexture = device.makeTexture(descriptor: desc)
+        } else {
+            stagingTexture = nil
+        }
+
         let semaphore = inFlightSemaphore
         commandBuffer.addCompletedHandler { [weak self] (_ commandBuffer) -> Swift.Void in
-            guard let self = self else { return }
-            // GPU times are in seconds
+            guard let self = self else { semaphore.signal(); return }
+
             let gpuMS = (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000.0
-            //print("Frame times  GPU: \(String(format: "%.3f", gpuMS)) ms")
-            Task {await MainActor.run(body: {
+
+            Task { @MainActor in
                 self.gpuTimings.append(gpuMS)
-                if BenchmarkState.shared.isBenchmarkMode && self.gpuTimings.count >= BenchmarkState.shared.benchmarkFrameCount {
+
+                if isCameraBenchmark {
+                    let done = BenchmarkState.shared.currentCameraIndex >= benchmarkCameras.count
+                        && self.gpuTimings.count >= benchmarkCameras.count
+
+                    // Save the rendered image from the stable staging texture.
+                    // Each save enters the DispatchGroup so we can wait for all before exit.
+                    if let saveDir, let staging = stagingTexture, !imgName.isEmpty {
+                        let saveGroup = self.imageSaveGroup
+                        saveGroup.enter()
+                        Task.detached(priority: .utility) {
+                            defer { saveGroup.leave() }
+                            guard let ciImage = CIImage(mtlTexture: staging,
+                                                        options: [.colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
+                            else {
+                                print("[Benchmark] Failed to create CIImage for \(imgName)")
+                                return
+                            }
+                            let flipped = ciImage.oriented(.downMirrored)
+                            let destURL = saveDir.appendingPathComponent(imgName + ".png")
+                            do {
+                                try ciCtx.writePNGRepresentation(
+                                    of: flipped,
+                                    to: destURL,
+                                    format: .RGBA8,
+                                    colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+                            } catch {
+                                print("[Benchmark] Failed to save \(imgName): \(error)")
+                            }
+                        }
+                    }
+
+                    if done {
+                        let avgGPU = self.gpuTimings.reduce(0, +) / Double(self.gpuTimings.count)
+                        let avgCPU = self.cpuTimings.reduce(0, +) / Double(self.cpuTimings.count)
+                        let camCount = benchmarkCameras.count
+                        let saveGroup = self.imageSaveGroup
+                        // Wait for ALL in-flight saves to finish before printing results and exiting.
+                        // Must use a plain GCD thread — DispatchGroup.wait() is unavailable in async contexts.
+                        DispatchQueue.global(qos: .utility).async {
+                            saveGroup.wait()
+                            print("Benchmark Finished. Rendered \(camCount) cameras. Average time CPU \(avgCPU) ms, GPU \(avgGPU) ms")
+                            fflush(stdout)
+                            exit(0)
+                        }
+                    }
+                } else if BenchmarkState.shared.isBenchmarkMode
+                            && self.gpuTimings.count >= BenchmarkState.shared.benchmarkFrameCount {
+                    // Fallback: frame-count-based benchmark (no cameras.json).
                     print("Benchmark Finished. Average time CPU \(TailMean(array: self.cpuTimings)) ms, GPU \(TailMean(array: self.gpuTimings)) ms")
                     fflush(stdout)
                     exit(0)
                 }
-            })}
+            }
             semaphore.signal()
         }
 
-        updateRotation()
-
         let didRender: Bool
         do {
-            didRender = try modelRenderer.render(viewports: [viewport],
+            didRender = try modelRenderer.render(viewports: [renderViewport],
                                                  colorTexture: view.multisampleColorTexture ?? drawable.texture,
                                                  colorStoreAction: view.multisampleColorTexture == nil ? .store : .multisampleResolve,
                                                  depthTexture: view.depthStencilTexture,
@@ -299,6 +442,25 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
         } catch {
             Self.log.error("Unable to render scene: \(error.localizedDescription)")
             didRender = false
+        }
+
+        // Blit the rendered drawable into our staging texture BEFORE presenting,
+        // so we have a stable CPU-readable copy that won't be recycled by Metal.
+        if let staging = stagingTexture, didRender,
+           let blitEncoder = commandBuffer.makeBlitCommandEncoder() {
+            blitEncoder.copy(from: colorTexture,
+                             sourceSlice: 0, sourceLevel: 0,
+                             sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                             sourceSize: MTLSize(width: colorTexture.width,
+                                                 height: colorTexture.height, depth: 1),
+                             to: staging,
+                             destinationSlice: 0, destinationLevel: 0,
+                             destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+#if os(macOS)
+            // Managed textures need an explicit synchronize to make GPU writes visible to CPU.
+            blitEncoder.synchronize(resource: staging)
+#endif
+            blitEncoder.endEncoding()
         }
 
         // Only present if rendering occurred; otherwise drop the frame
@@ -317,4 +479,3 @@ class MetalKitSceneRenderer: NSObject, MTKViewDelegate {
 }
 
 #endif // os(iOS) || os(macOS)
-

@@ -14,7 +14,39 @@ struct SampleApp: App {
             BenchmarkState.shared.benchmarkModelPath = resolvedURL
             print("[Benchmark] Mode enabled. Model path: \(resolvedURL.path)")
             print("[Benchmark] File exists: \(FileManager.default.fileExists(atPath: resolvedURL.path))")
-            print("[Benchmark] Will print result after \(BenchmarkState.shared.benchmarkFrameCount) frames.")
+
+            // Look for cameras.json three directories up from the .ply file:
+            //   .../model_xxx/point_cloud/iteration_NNNNN/point_cloud.ply
+            //                             ^--- .deletingLastPathComponent() x3
+            let camerasURL = resolvedURL
+                .deletingLastPathComponent()   // iteration_NNNNN/
+                .deletingLastPathComponent()   // point_cloud/
+                .deletingLastPathComponent()   // model_xxx/
+                .appendingPathComponent("cameras.json")
+
+            if FileManager.default.fileExists(atPath: camerasURL.path) {
+                do {
+                    let cameras = try CameraData.load(from: camerasURL)
+                    BenchmarkState.shared.cameras = cameras
+                    print("[Benchmark] Loaded \(cameras.count) cameras from \(camerasURL.path)")
+                } catch {
+                    print("[Benchmark] Warning: could not load cameras.json: \(error)")
+                }
+            } else {
+                print("[Benchmark] No cameras.json found at \(camerasURL.path); timing \(BenchmarkState.shared.benchmarkFrameCount) interactive frames.")
+            }
+
+            // --save-images: save each rendered frame as PNG next to the .ply file
+            if args.contains("--save-images") {
+                let saveURL = resolvedURL.deletingLastPathComponent()
+                BenchmarkState.shared.saveImagesURL = saveURL
+                print("[Benchmark] Will save rendered images to \(saveURL.path)")
+            }
+
+            let frameCount = BenchmarkState.shared.cameras.isEmpty
+                ? BenchmarkState.shared.benchmarkFrameCount
+                : BenchmarkState.shared.cameras.count
+            print("[Benchmark] Will print result after \(frameCount) frames.")
         } else {
             // Drop executable and standard Xcode/macOS args like -NSDocumentRevisionsDebugMode
             if let path = args.dropFirst().first(where: { !$0.hasPrefix("-") }) {
@@ -56,4 +88,3 @@ struct SampleApp: App {
     }
 #endif // os(visionOS)
 }
-
